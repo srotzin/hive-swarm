@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: hive-swarm
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python hive_swarm.py
+    envVars:
+      - key: PORT
+        value: 8767
+      - key: HIVE_KEY
+        value: hive_internal_125e04e071e8829be631ea0216dd4a0c9b707975fcecaf8c62c6a2ab43327d46
