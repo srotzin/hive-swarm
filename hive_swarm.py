@@ -517,13 +517,36 @@ async def handle_agent_json(request: web.Request) -> web.Response:
                 "formation": "/swarm/formation",
                 "health":    "/health",
             },
-            "payment": {
-                "scheme":  "x402",
-                "network": "base",
-                "asset":   USDC,
-                "payTo":   TREASURY,
-                "price":   PRICE_USDC,
-                "unit":    "USDC",
+                        "payment": {
+            "scheme":   "x402",
+            "protocol": "x402",
+            "network":  "base",
+            "currency": "USDC",
+            "asset":    "USDC",
+            "address":   "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
+            "recipient": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
+            "treasury":  "Monroe (W1)",
+            "rails": [
+            {"chain": "base",     "asset": "USDC", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
+            {"chain": "base",     "asset": "USDT", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
+            {"chain": "ethereum", "asset": "USDT", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
+            {"chain": "solana",   "asset": "USDC", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
+            {"chain": "solana",   "asset": "USDT", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
+            ],
+            },
+            "extensions": {
+            "hive_pricing": {
+            "currency": "USDC", "network": "base", "model": "per_call",
+            "first_call_free": True, "loyalty_threshold": 6,
+            "loyalty_message": "Every 6th paid call is free",
+            "treasury": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
+            "treasury_codename": "Monroe (W1)",
+            },
+            },
+            "bogo": {
+            "first_call_free": True, "loyalty_threshold": 6,
+            "pitch": "Pay this once, your 6th paid call is on the house. New here? Add header 'x-hive-did' to claim your first call free.",
+            "claim_with": "x-hive-did header",
             },
             "formation": {
                 "phases":        3,
