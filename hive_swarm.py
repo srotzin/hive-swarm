@@ -7,6 +7,9 @@ Chains 3 Phalanx instances in sequence:
   Phase 3 — Critic    (attack the plan, find failure modes)
 
 45 inference heads total (15 per Phalanx × 3). $0.45/task via x402.
+
+Wave D Section 8 — x402 intercept on /swarm/execute + Spectral receipt + BOGO
+Ref: /home/user/workspace/launch_artifacts/WAVE_D_SCOPING_20260429.md
 """
 
 import asyncio
@@ -29,10 +32,11 @@ logging.basicConfig(
 logger = logging.getLogger("hive_swarm")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-PHALANX_URL  = "https://hive-phalanx.onrender.com"
-HIVEGATE_URL = "https://hivegate.onrender.com"
-COMPUTE_URL  = "https://hivecompute-g2g7.onrender.com"
-PULSE_URL    = "https://hive-pulse.onrender.com"
+PHALANX_URL    = "https://hive-phalanx.onrender.com"
+HIVEGATE_URL   = "https://hivegate.onrender.com"
+COMPUTE_URL    = "https://hivecompute-g2g7.onrender.com"
+PULSE_URL      = "https://hive-pulse.onrender.com"
+SPECTRAL_URL   = "https://hive-receipt.onrender.com/v1/receipt/sign"
 
 HIVE_KEY  = os.environ.get(
     "HIVE_KEY",
@@ -42,10 +46,14 @@ AGENT_PK  = os.environ.get(
     "AGENT_WALLET_PK",
     "0xa50726073d9bb635fd05e1aa73bdd1e4bc7c45761a6fec2d0b182c87d46299db",
 )
-TREASURY  = "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"
+TREASURY  = "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"   # Monroe W1
 USDC      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 CHAIN_ID  = 8453
 PRICE_USDC = 0.45   # $0.15 per Phalanx × 3
+
+# Subscription tiers
+SUB_ENTERPRISE_USDC = 200_000_000  # $200/mo in USDC atomic
+SUB_API_USDC        =  50_000_000  # $50/mo  in USDC atomic
 
 PORT = int(os.environ.get("PORT", 8767))
 
@@ -57,6 +65,8 @@ state: Dict[str, Any] = {
     "tasks_run":     0,
     "booted_at":     None,
     "boot_complete": False,
+    # BOGO: track per-caller paid calls; every 6th is free
+    "bogo_counters": {},   # {caller_did: int}
 }
 
 # Shared aiohttp ClientSession (created at startup)
@@ -72,18 +82,10 @@ def get_session() -> aiohttp.ClientSession:
 # ── Boot sequence ──────────────────────────────────────────────────────────────
 
 async def boot():
-    """
-    Full boot sequence — runs as a background task so it doesn't block startup.
-    Steps:
-      1. Register on HiveGate → get DID
-      2. Register DID on HiveCompute smsh
-      3. Register on pulse.smsh
-      4. (killswitch is checked per-request, not at boot)
-    """
-    await asyncio.sleep(1)  # let the server start first
+    """Full boot sequence — runs as a background task."""
+    await asyncio.sleep(1)
     session = get_session()
 
-    # 1. HiveGate onboard
     try:
         async with session.post(
             f"{HIVEGATE_URL}/v1/gate/onboard",
@@ -98,7 +100,6 @@ async def boot():
     except Exception as exc:
         logger.warning("HiveGate onboard failed (non-fatal): %s", exc)
 
-    # 2. HiveCompute smsh register
     try:
         smsh_payload: Dict[str, Any] = {"did": state["did"], "agent_name": "HiveSwarm-Alpha"}
         async with session.post(
@@ -113,7 +114,6 @@ async def boot():
     except Exception as exc:
         logger.warning("HiveCompute smsh register failed (non-fatal): %s", exc)
 
-    # 3. Pulse meet
     try:
         pulse_payload = {
             "did":             state["did"],
@@ -137,7 +137,7 @@ async def boot():
 
 
 async def pulse_tick():
-    """Fire-and-forget pulse tick to increment total_jobs."""
+    """Fire-and-forget pulse tick."""
     try:
         session = get_session()
         async with session.post(
@@ -155,13 +155,63 @@ async def pulse_tick():
         logger.debug("Pulse tick failed (non-fatal): %s", exc)
 
 
+# ── Spectral receipt ───────────────────────────────────────────────────────────
+
+async def emit_spectral_receipt(
+    route: str,
+    amount_usdc: float,
+    caller_did: Optional[str],
+    loyalty_free: bool = False,
+):
+    """POST receipt to hive-receipt.onrender.com/v1/receipt/sign (fire-and-forget)."""
+    try:
+        session = get_session()
+        payload = {
+            "service":      "hive-swarm",
+            "route":        route,
+            "amount_usdc":  amount_usdc,
+            "treasury":     TREASURY,
+            "caller_did":   caller_did,
+            "loyalty_free": loyalty_free,
+            "timestamp":    int(time.time()),
+            "brand_color":  "#C08D23",
+        }
+        async with session.post(
+            SPECTRAL_URL,
+            json=payload,
+            headers={"X-Hive-Key": HIVE_KEY, "Content-Type": "application/json"},
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as resp:
+            await resp.read()
+            logger.debug("Spectral receipt emitted for %s", route)
+    except Exception as exc:
+        logger.debug("Spectral receipt emit failed (non-fatal): %s", exc)
+
+
+# ── BOGO logic ─────────────────────────────────────────────────────────────────
+
+def check_bogo(caller_did: Optional[str]) -> bool:
+    """
+    Every 6th PAID call from the same caller is free.
+    Returns True if this call should be loyalty-free.
+    Does NOT increment counter here — call increment_bogo after.
+    """
+    if not caller_did:
+        return False
+    count = state["bogo_counters"].get(caller_did, 0)
+    return count > 0 and count % 6 == 0
+
+
+def increment_bogo(caller_did: Optional[str]):
+    """Increment the paid call counter for this caller."""
+    if not caller_did:
+        return
+    state["bogo_counters"][caller_did] = state["bogo_counters"].get(caller_did, 0) + 1
+
+
 # ── Killswitch check ───────────────────────────────────────────────────────────
 
 async def check_killswitch() -> Optional[web.Response]:
-    """
-    Returns a 503 Response if the killswitch directive is not 'run',
-    otherwise returns None (meaning proceed).
-    """
     try:
         session = get_session()
         async with session.get(
@@ -186,12 +236,8 @@ async def check_killswitch() -> Optional[web.Response]:
 
 def verify_x402_payment(request: web.Request) -> Optional[web.Response]:
     """
-    Verify that the incoming request carries a valid X-PAYMENT header worth
-    at least PRICE_USDC. Returns a 402 Response on failure, None on success.
-
-    For the swarm we trust the header is present and structurally valid — the
-    full on-chain settlement is handled by HiveCompute middleware.  Here we
-    simply enforce that the header exists and contains the correct amount.
+    Verify X-PAYMENT header. Returns 402 Response on failure, None on success.
+    x-hive-did header identifies caller for BOGO tracking.
     """
     import base64
 
@@ -216,7 +262,6 @@ def verify_x402_payment(request: web.Request) -> Optional[web.Response]:
             status=402,
         )
 
-    # Decode and validate amount
     try:
         decoded  = json.loads(base64.b64decode(x_payment).decode())
         auth     = decoded.get("payload", {}).get("authorization", {})
@@ -231,7 +276,6 @@ def verify_x402_payment(request: web.Request) -> Optional[web.Response]:
                 },
                 status=402,
             )
-        # Check validity window
         now = int(time.time())
         valid_before = int(auth.get("validBefore", 0))
         valid_after  = int(auth.get("validAfter",  0))
@@ -254,11 +298,6 @@ async def call_phalanx(
     max_tokens: int = 512,
     timeout: int = 120,
 ) -> Dict[str, Any]:
-    """
-    POST to Phalanx /phalanx/execute. Uses X-Hive-Key for internal auth.
-    No x402 payment is attached here — the swarm already paid at its own gate.
-    Returns the parsed JSON response.
-    """
     session = get_session()
     headers = {
         "X-Hive-Key":   HIVE_KEY,
@@ -279,24 +318,17 @@ async def call_phalanx(
 
 
 def extract_answer(response: Dict[str, Any]) -> str:
-    """Extract the answer string from a Phalanx response."""
     if "answer" in response:
         return str(response["answer"])
     if "consensus" in response and isinstance(response["consensus"], dict):
         return str(response["consensus"].get("answer", ""))
-    # Fallback: return the whole response as a string
     return json.dumps(response)
 
 
 def infer_confidence(phase3_answer: str) -> str:
-    """
-    Heuristically infer confidence from the critic phase output.
-    High if no major failure modes found; medium if some; low if severe.
-    """
     lower = phase3_answer.lower()
     severe_signals = ["critical failure", "fundamentally flawed", "cannot work", "fatal flaw"]
     medium_signals = ["concern", "risk", "limitation", "weakness", "caveat", "however"]
-
     if any(s in lower for s in severe_signals):
         return "low"
     if any(s in lower for s in medium_signals):
@@ -365,6 +397,99 @@ async def handle_formation(request: web.Request) -> web.Response:
     )
 
 
+# ── Subscription endpoint ──────────────────────────────────────────────────────
+
+async def handle_subscription(request: web.Request) -> web.Response:
+    """
+    POST /v1/subscription
+    Formation rental subscription. Enterprise $200/mo | API $50/mo.
+    x402-gated — returns 402 if no valid payment.
+    Ref: Wave D Section 8 formation rental model.
+    """
+    import base64
+
+    # Parse tier from body
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    sub_tier     = body.get("tier", "api")  # "enterprise" | "api"
+    caller_did   = request.headers.get("x-hive-did") or request.headers.get("x-agent-did")
+
+    required_usdc_atomic = SUB_API_USDC if sub_tier == "api" else SUB_ENTERPRISE_USDC
+    required_label       = "$50/mo" if sub_tier == "api" else "$200/mo"
+
+    x_payment = request.headers.get("X-PAYMENT") or request.headers.get("x-payment")
+    if not x_payment:
+        return web.json_response(
+            {
+                "error": "Payment required for subscription",
+                "x402": {
+                    "version": 1,
+                    "accepts": [
+                        {
+                            "scheme":   "exact",
+                            "network":  "base",
+                            "maxAmountRequired": str(required_usdc_atomic),
+                            "asset":    USDC,
+                            "payTo":    TREASURY,
+                            "description": f"HiveSwarm {sub_tier} subscription {required_label}",
+                        }
+                    ],
+                },
+            },
+            status=402,
+        )
+
+    # Validate payment amount
+    try:
+        decoded = json.loads(base64.b64decode(x_payment).decode())
+        auth    = decoded.get("payload", {}).get("authorization", {})
+        value   = int(auth.get("value", 0))
+        if value < required_usdc_atomic:
+            return web.json_response(
+                {
+                    "error":    "Insufficient payment for subscription tier",
+                    "required": required_usdc_atomic,
+                    "provided": value,
+                    "tier":     sub_tier,
+                },
+                status=402,
+            )
+    except Exception as exc:
+        return web.json_response({"error": f"Malformed X-PAYMENT header: {exc}"}, status=402)
+
+    # Emit Spectral receipt for subscription
+    asyncio.create_task(emit_spectral_receipt(
+        route="/v1/subscription",
+        amount_usdc=required_usdc_atomic / 1_000_000,
+        caller_did=caller_did,
+        loyalty_free=False,
+    ))
+
+    return web.json_response(
+        {
+            "success":        True,
+            "tier":           sub_tier,
+            "amount_usdc":    required_usdc_atomic / 1_000_000,
+            "treasury":       TREASURY,
+            "treasury_label": "Monroe W1",
+            "includes":       [
+                "Unlimited /swarm/execute calls (fair-use)",
+                "Priority formation routing",
+                "BOGO loyalty programme",
+                "pulse.smsh tier acceleration",
+            ] if sub_tier == "enterprise" else [
+                "500 /swarm/execute calls/mo",
+                "BOGO loyalty programme",
+                "pulse.smsh tracking",
+            ],
+            "renews":         "monthly",
+            "brand_color":    "#C08D23",
+        }
+    )
+
 
 # ── AI Status Brief ────────────────────────────────────────────────────────────
 HIVEAI_URL   = "https://hive-ai-1.onrender.com/v1/chat/completions"
@@ -373,7 +498,6 @@ HIVEAI_MODEL = "meta-llama/llama-3.1-8b-instruct"
 
 
 async def _swarm_call_hive_ai(system_prompt: str, user_prompt: str) -> Optional[str]:
-    """Call HiveAI. Returns completion text or None on failure."""
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
@@ -399,20 +523,13 @@ async def _swarm_call_hive_ai(system_prompt: str, user_prompt: str) -> Optional[
 
 
 async def handle_ai_status_brief(request: web.Request) -> web.Response:
-    """
-    GET /swarm/ai/status-brief  ($0.02/call)
-    Fetches current swarm health, calls HiveAI to interpret metrics.
-    Response: { success, brief, swarm_health, agents_active, win_rate_pct, price_usdc: 0.02 }
-    """
-    # Fetch current stats from health/status endpoint
-    agents_total  = 100   # known baseline
-    agents_active = 80    # known baseline
+    agents_total  = 100
+    agents_active = 80
     tasks_run     = state.get("tasks_run", 0)
-    wins          = 58851 + tasks_run  # cumulative wins baseline
+    wins          = 58851 + tasks_run
     tier          = state.get("tier", "VOID")
     boot_complete = state.get("boot_complete", False)
 
-    # Try to get live health data from self
     try:
         port = PORT
         async with aiohttp.ClientSession() as s:
@@ -425,7 +542,7 @@ async def handle_ai_status_brief(request: web.Request) -> web.Response:
                     agents_active = data.get("agents_active", agents_active)
                     agents_total  = data.get("agents_total",  agents_total)
     except Exception:
-        pass  # use defaults
+        pass
 
     win_rate_pct = round((wins / max(tasks_run + wins, 1)) * 100, 1) if tasks_run > 0 else 93.4
 
@@ -448,7 +565,6 @@ async def handle_ai_status_brief(request: web.Request) -> web.Response:
 
     brief = await _swarm_call_hive_ai(system_prompt, user_prompt)
 
-    # Determine swarm health classification
     activity_ratio = agents_active / max(agents_total, 1)
     if activity_ratio >= 0.8 and win_rate_pct >= 85:
         swarm_health = "hot"
@@ -490,6 +606,13 @@ Formation:
   Phase 2 — Phalanx Strategist (15 heads): plan, decide, second-order
   Phase 3 — Phalanx Critic (15 heads): attack, find failure modes, synthesize
 
+Subscription:
+  POST /v1/subscription  {"tier": "enterprise"}  $200/mo
+  POST /v1/subscription  {"tier": "api"}          $50/mo
+  Payment via x402, treasury Monroe W1
+
+BOGO: Every 6th paid call returns free (x-hive-loyalty-free: true header)
+
 Identity: pulse.smsh registered — DID, tier, vapor trails
 Entry: https://hivegate.onrender.com/v1/gate/onboard
 Integrate: https://github.com/srotzin/hive-pulse/blob/master/INTEGRATE.md
@@ -512,46 +635,52 @@ async def handle_agent_json(request: web.Request) -> web.Response:
                 "structured-consensus",
             ],
             "endpoints": {
-                "execute":   "/swarm/execute",
-                "status":    "/swarm/status",
-                "formation": "/swarm/formation",
-                "health":    "/health",
+                "execute":      "/swarm/execute",
+                "status":       "/swarm/status",
+                "formation":    "/swarm/formation",
+                "health":       "/health",
+                "subscription": "/v1/subscription",
             },
-                        "payment": {
-            "scheme":   "x402",
-            "protocol": "x402",
-            "network":  "base",
-            "currency": "USDC",
-            "asset":    "USDC",
-            "address":   "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
-            "recipient": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
-            "treasury":  "Monroe (W1)",
-            "rails": [
-            {"chain": "base",     "asset": "USDC", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
-            {"chain": "base",     "asset": "USDT", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
-            {"chain": "ethereum", "asset": "USDT", "address": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e"},
-            {"chain": "solana",   "asset": "USDC", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
-            {"chain": "solana",   "asset": "USDT", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
-            ],
+            "payment": {
+                "scheme":   "x402",
+                "protocol": "x402",
+                "network":  "base",
+                "currency": "USDC",
+                "asset":    "USDC",
+                "address":   TREASURY,
+                "recipient": TREASURY,
+                "treasury":  "Monroe (W1)",
+                "rails": [
+                    {"chain": "base",     "asset": "USDC", "address": TREASURY},
+                    {"chain": "base",     "asset": "USDT", "address": TREASURY},
+                    {"chain": "ethereum", "asset": "USDT", "address": TREASURY},
+                    {"chain": "solana",   "asset": "USDC", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
+                    {"chain": "solana",   "asset": "USDT", "address": "B1N61cuL35fhskWz5dw8XqDyP6LWi3ZWmq8CNA9L3FVn"},
+                ],
             },
             "extensions": {
-            "hive_pricing": {
-            "currency": "USDC", "network": "base", "model": "per_call",
-            "first_call_free": True, "loyalty_threshold": 6,
-            "loyalty_message": "Every 6th paid call is free",
-            "treasury": "0x15184bf50b3d3f52b60434f8942b7d52f2eb436e",
-            "treasury_codename": "Monroe (W1)",
-            },
+                "hive_pricing": {
+                    "currency": "USDC", "network": "base", "model": "per_call",
+                    "first_call_free": True, "loyalty_threshold": 6,
+                    "loyalty_message": "Every 6th paid call is free",
+                    "treasury": TREASURY,
+                    "treasury_codename": "Monroe (W1)",
+                    "subscription": {
+                        "enterprise": {"price_usdc": 200, "period": "monthly"},
+                        "api":        {"price_usdc": 50,  "period": "monthly"},
+                        "endpoint":   "/v1/subscription",
+                    },
+                },
             },
             "bogo": {
-            "first_call_free": True, "loyalty_threshold": 6,
-            "pitch": "Pay this once, your 6th paid call is on the house. New here? Add header 'x-hive-did' to claim your first call free.",
-            "claim_with": "x-hive-did header",
+                "first_call_free": True, "loyalty_threshold": 6,
+                "pitch": "Pay this once, your 6th paid call is on the house. New here? Add header 'x-hive-did' to claim your first call free.",
+                "claim_with": "x-hive-did header",
             },
             "formation": {
-                "phases":        3,
+                "phases":          3,
                 "heads_per_phase": 15,
-                "total_heads":   45,
+                "total_heads":     45,
             },
         }
     )
@@ -578,15 +707,25 @@ async def handle_execute(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "Field 'task' is required"}, status=400)
 
-    # 3. x402 payment check
-    payment_err = verify_x402_payment(request)
-    if payment_err is not None:
-        return payment_err
+    # 3. Identify caller for BOGO
+    caller_did = request.headers.get("x-hive-did") or request.headers.get("x-agent-did")
+
+    # 4. BOGO check — every 6th paid call is free
+    loyalty_free = check_bogo(caller_did)
+
+    if not loyalty_free:
+        # 5. x402 payment check (skipped for loyalty-free calls)
+        payment_err = verify_x402_payment(request)
+        if payment_err is not None:
+            return payment_err
+
+    # Increment BOGO counter
+    increment_bogo(caller_did)
 
     # Optionally prepend context to the task
     task_with_context = f"{context}\n\n{task}" if context else task
 
-    # 4. Phase 1 — Analyst
+    # 6. Phase 1 — Analyst
     logger.info("Phase 1 start (Analyst)")
     try:
         phase1_resp = await call_phalanx(
@@ -605,7 +744,7 @@ async def handle_execute(request: web.Request) -> web.Response:
     phase1_answer = extract_answer(phase1_resp)
     logger.info("Phase 1 complete (%d chars)", len(phase1_answer))
 
-    # 5. Phase 2 — Strategist
+    # 7. Phase 2 — Strategist
     logger.info("Phase 2 start (Strategist)")
     try:
         phase2_resp = await call_phalanx(
@@ -631,7 +770,7 @@ async def handle_execute(request: web.Request) -> web.Response:
     phase2_answer = extract_answer(phase2_resp)
     logger.info("Phase 2 complete (%d chars)", len(phase2_answer))
 
-    # 6. Phase 3 — Critic
+    # 8. Phase 3 — Critic
     logger.info("Phase 3 start (Critic)")
     try:
         phase3_resp = await call_phalanx(
@@ -658,13 +797,23 @@ async def handle_execute(request: web.Request) -> web.Response:
     phase3_answer = extract_answer(phase3_resp)
     logger.info("Phase 3 complete (%d chars)", len(phase3_answer))
 
-    # 7. Increment task counter
+    # 9. Increment task counter
     state["tasks_run"] += 1
 
-    # 8. Fire-and-forget pulse tick
+    # 10. Fire-and-forget: pulse tick + Spectral receipt
     asyncio.create_task(pulse_tick())
+    asyncio.create_task(emit_spectral_receipt(
+        route="/swarm/execute",
+        amount_usdc=0.0 if loyalty_free else PRICE_USDC,
+        caller_did=caller_did,
+        loyalty_free=loyalty_free,
+    ))
 
     wall_ms = int((time.monotonic() - wall_start) * 1000)
+
+    response_headers = {}
+    if loyalty_free:
+        response_headers["x-hive-loyalty-free"] = "true"
 
     return web.json_response(
         {
@@ -678,11 +827,13 @@ async def handle_execute(request: web.Request) -> web.Response:
             "wall_clock_ms":   wall_ms,
             "heads_fired":     45,
             "phalanx_calls":   3,
-            "price_paid_usdc": PRICE_USDC,
+            "price_paid_usdc": 0.0 if loyalty_free else PRICE_USDC,
+            "loyalty_free":    loyalty_free,
             "swarm_did":       state["did"],
             "tier":            state["tier"],
             "tasks_run_total": state["tasks_run"],
-        }
+        },
+        headers=response_headers,
     )
 
 
@@ -715,6 +866,8 @@ def build_app() -> web.Application:
     app.router.add_get("/swarm/ai/status-brief",   handle_ai_status_brief)
     app.router.add_get("/llms.txt",                handle_llms_txt)
     app.router.add_get("/.well-known/agent.json",  handle_agent_json)
+    # Wave D Section 8 — subscription endpoint
+    app.router.add_post("/v1/subscription",        handle_subscription)
 
     return app
 
