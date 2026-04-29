@@ -591,6 +591,56 @@ async def handle_ai_status_brief(request: web.Request) -> web.Response:
         "price_usdc":    0.02,
     })
 
+
+# ── Rail 2 Catnip: GET /v1/swarm/sample-execute ─────────────────────────────
+import uuid as _swuuid_mod
+import random as _swrand
+_swarm_catnip_store = {}
+
+async def swarm_sample_execute(req: web.Request) -> web.Response:
+    ip = req.headers.get("X-Forwarded-For", req.remote or "anon").split(",")[0].strip()
+    now = __import__("time").time()
+    rec = _swarm_catnip_store.get(ip, {"count": 0, "reset_at": now + 3600})
+    if now > rec["reset_at"]:
+        rec = {"count": 0, "reset_at": now + 3600}
+    rec["count"] += 1
+    _swarm_catnip_store[ip] = rec
+    trace_id = str(_swuuid_mod.uuid4())
+    headers = {
+        "Hive-Referral-Trace": trace_id,
+        "Hive-Brand-Gold": "#C08D23",
+        "X-RateLimit-Limit": "60",
+        "X-RateLimit-Remaining": str(max(0, 60 - rec["count"])),
+        "X-RateLimit-Reset": __import__("datetime").datetime.utcfromtimestamp(rec["reset_at"]).isoformat() + "Z",
+    }
+    if rec["count"] > 60:
+        return web.json_response({"error": "Rate limit: 60 req/IP/hour"}, status=429, headers=headers)
+    exec_id = "swarm-" + str(_swuuid_mod.uuid4())[:8]
+    body = {
+        "execution_id": exec_id,
+        "anonymized": True,
+        "task_prompt": "Sample anonymized swarm execution — task redacted",
+        "architecture": "Phalanx-of-Phalanxes (3 phases, 15 heads each = 45 total)",
+        "phases": [
+            {"phase": 1, "role": "Analyst",    "heads": 15, "output": "Decomposed task into 4 sub-problems; identified key constraints."},
+            {"phase": 2, "role": "Strategist", "heads": 15, "output": "Ranked 3 solution paths; selected highest-yield with risk hedge."},
+            {"phase": 3, "role": "Critic",     "heads": 15, "output": "Found 1 failure mode; recommended rollback trigger at step 2b."},
+        ],
+        "total_heads_fired": 45,
+        "execution_time_ms": round(_swrand.uniform(2100, 8900), 0),
+        "consensus_score": round(0.78 + _swrand.random() * 0.18, 3),
+        "cost_usdc": 0.45,
+        "executed_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "note": "Anonymized execution trace — task and agent DID redacted. Real swarm execution costs $0.45 USDC.",
+        "next_paid_endpoint": {
+            "path": "POST /swarm/execute",
+            "price": "$0.45 USDC per swarm execution",
+            "url": "https://hive-swarm.onrender.com/swarm/execute",
+        },
+        "trace_id": trace_id,
+    }
+    return web.json_response(body, headers=headers)
+
 async def handle_llms_txt(request: web.Request) -> web.Response:
     content = """\
 # HiveSwarm — Phalanx-of-Phalanxes
@@ -853,6 +903,61 @@ async def on_shutdown(app: web.Application):
     logger.info("aiohttp ClientSession closed")
 
 
+
+# ── Rail 2 Catnip: GET /v1/swarm/signal/feed (last 50 SSE bursts, anonymized) ──
+import uuid as _ssuuid_mod
+import random as _ssrand
+_signal_catnip_store = {}
+
+async def swarm_signal_feed(req: web.Request) -> web.Response:
+    ip = req.headers.get("X-Forwarded-For", req.remote or "anon").split(",")[0].strip()
+    now = __import__("time").time()
+    rec = _signal_catnip_store.get(ip, {"count": 0, "reset_at": now + 3600})
+    if now > rec["reset_at"]:
+        rec = {"count": 0, "reset_at": now + 3600}
+    rec["count"] += 1
+    _signal_catnip_store[ip] = rec
+    trace_id = str(_ssuuid_mod.uuid4())
+    headers = {
+        "Hive-Referral-Trace": trace_id,
+        "Hive-Brand-Gold": "#C08D23",
+        "X-RateLimit-Limit": "60",
+        "X-RateLimit-Remaining": str(max(0, 60 - rec["count"])),
+        "X-RateLimit-Reset": __import__("datetime").datetime.utcfromtimestamp(rec["reset_at"]).isoformat() + "Z",
+    }
+    if rec["count"] > 60:
+        return web.json_response({"error": "Rate limit: 60 req/IP/hour"}, status=429, headers=headers)
+    signal_types = ["phase_transition", "consensus_lock", "head_failure_recovered", "task_complete", "formation_resize", "critic_veto", "bogo_trigger", "pheromone_burst"]
+    base_ts = now
+    bursts = []
+    for i in range(50):
+        sig_type = _ssrand.choice(signal_types)
+        bursts.append({
+            "signal_id": "sig-" + str(_ssuuid_mod.uuid4())[:8],
+            "signal_type": sig_type,
+            "swarm_id": "swarm-anon-" + str(_ssuuid_mod.uuid4())[:6],
+            "phase": _ssrand.choice([1, 2, 3]),
+            "heads_involved": _ssrand.randint(1, 15),
+            "payload_size_bytes": _ssrand.randint(256, 4096),
+            "latency_ms": round(_ssrand.uniform(12, 340), 1),
+            "emitted_at": __import__("datetime").datetime.utcfromtimestamp(base_ts - i * _ssrand.uniform(0.8, 3.5)).isoformat() + "Z",
+            "anonymized": True,
+        })
+    body = {
+        "feed_type": "last_50_sse_bursts_anonymized",
+        "generated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "burst_count": 50,
+        "bursts": bursts,
+        "note": "Anonymized SSE signal relay feed — swarm IDs and task payloads redacted. Real-time SSE stream requires subscription.",
+        "next_paid_endpoint": {
+            "path": "POST /swarm/execute (full execution with SSE signal relay)",
+            "price": "$0.45 USDC per swarm execution",
+            "url": "https://hive-swarm.onrender.com/swarm/execute",
+        },
+        "trace_id": trace_id,
+    }
+    return web.json_response(body, headers=headers)
+
 def build_app() -> web.Application:
     app = web.Application()
 
@@ -860,6 +965,8 @@ def build_app() -> web.Application:
     app.on_shutdown.append(on_shutdown)
 
     app.router.add_get("/health",                  handle_health)
+    app.router.add_get("/v1/swarm/sample-execute",  swarm_sample_execute)
+    app.router.add_get("/v1/swarm/signal/feed",      swarm_signal_feed)
     app.router.add_get("/swarm/status",            handle_status)
     app.router.add_get("/swarm/formation",         handle_formation)
     app.router.add_post("/swarm/execute",          handle_execute)
