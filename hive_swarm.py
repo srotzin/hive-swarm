@@ -966,6 +966,7 @@ def build_app() -> web.Application:
 
     app.router.add_get("/health",                  handle_health)
     app.router.add_get("/v1/swarm/sample-execute",  swarm_sample_execute)
+    app.router.add_get("/swarm/sample-execute",      swarm_sample_execute)   # Rail 2 catnip alias
     app.router.add_get("/v1/swarm/signal/feed",      swarm_signal_feed)
     app.router.add_get("/swarm/status",            handle_status)
     app.router.add_get("/swarm/formation",         handle_formation)
